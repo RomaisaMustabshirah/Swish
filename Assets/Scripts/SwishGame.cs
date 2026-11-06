@@ -31,8 +31,8 @@ public class SwishGame : MonoBehaviour
     const float NIGHT_AT = 30f;                             // score at which it is full night
     Vector2 aimDown, aimCur;
 
-    // Resting spot: ball's bottom touches the centre of the inner circle
-    float RestY { get { return Cfg.GROUND + 34f - Cfg.R; } }
+    // Resting spot AND physics floor: the ball's bottom touches the centre of the inner circle
+    public float RestY { get { return Cfg.GROUND + 34f - Cfg.R; } }
 
     bool ending, touched;
     public bool scored;
@@ -47,7 +47,12 @@ public class SwishGame : MonoBehaviour
     void Awake()
     {
         Input.simulateMouseWithTouches = true;
+
+        // smoother rendering: own the frame rate, smooth edges
+        QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = 60;
+        QualitySettings.antiAliasing = 4;
+
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
         Store.Load();
         Theme.Apply("#1b2433", Store.Current.baseHex, "#e63b2e");
@@ -93,8 +98,8 @@ public class SwishGame : MonoBehaviour
         Cfg.X1 = Cfg.WW * .5f + half;
 
         hoop.baseY = Mathf.Round(Cfg.Y0 + ch * .27f);
-        hoop.baseX = Cfg.WW / 2f - 18f;
-        float h = (Cfg.GROUND - Cfg.R) - (hoop.baseY - 36f - 30f);
+        hoop.baseX = Cfg.WW / 2f;                       // basket in the middle of the screen
+        float h = RestY - (hoop.baseY - 36f - 30f);
         Cfg.MAXSPEED = Mathf.Sqrt(2f * Cfg.G * Mathf.Max(140f, h)) * 1.2f;
 
         cam.orthographicSize = Cfg.S * ch / 2f;
@@ -109,7 +114,10 @@ public class SwishGame : MonoBehaviour
     void Update()
     {
         if (Screen.width != lastW || Screen.height != lastH) Layout();
-        float dt = Mathf.Min(Time.deltaTime, .05f);
+
+        // smoothDeltaTime removes frame-time jitter, which is what makes motion look stuttery
+        float dt = Mathf.Min(Time.smoothDeltaTime, .05f);
+
         HandleInput();
         Tick(dt);
         view.Render();
@@ -147,6 +155,7 @@ public class SwishGame : MonoBehaviour
 
     void Advance(float dt)
     {
+        if (dt <= 0f) return;                           // avoid divide-by-zero in Step
         dt = Mathf.Min(dt, 1f / 20f);
         int n = Mathf.Max(1, Mathf.CeilToInt(dt / (1f / 240f)));
         float h = dt / n;
@@ -196,7 +205,8 @@ public class SwishGame : MonoBehaviour
         if (ball.x < Cfg.X0 + Cfg.R) { ball.x = Cfg.X0 + Cfg.R; if (ball.vx < 0) ball.vx = -ball.vx * Cfg.E_WALL; }
         if (ball.x > Cfg.X1 - Cfg.R) { ball.x = Cfg.X1 - Cfg.R; if (ball.vx > 0) ball.vx = -ball.vx * Cfg.E_WALL; }
         if (ball.y < Cfg.Y0 + Cfg.R) { ball.y = Cfg.Y0 + Cfg.R; if (ball.vy < 0) ball.vy = -ball.vy * .4f; }
-        float floorY = Cfg.GROUND - Cfg.R;
+
+        float floorY = RestY;           // same height the ball rests at, so there is no jump on launch
         if (ball.y > floorY)
         {
             ball.y = floorY;
@@ -310,47 +320,47 @@ public class SwishGame : MonoBehaviour
         Audio.Play(Snd.Shoot);
     }
 
-   void OnScore()
-{
-    scored = true;
-
-    bool swish = !touched;          // no rim or board contact
-    int pts = swish ? 2 : 1;
-    int prev = score;
-
-    score += pts;       // Current game score
-    Store.Add(pts);     // Coins earned
-    earned += pts;
-
-    if (swish) swishes++;
-    else rimIns++;
-
-    netBounce = swish ? 1.6f : 1f;  // net snaps harder on a swish
-    phase = Phase.Settle; resolveT = 1.05f;
-
-    float px = Mathf.Clamp(hoop.x, 80f, 280f);
-
-    if (swish)
+    void OnScore()
     {
-        // Big centered callout, a smaller +2 under it, a larger burst and a screen punch
-        Fx.Popup("SWISH!", Cfg.WW / 2f, hoop.y + Cfg.NET_H + 90f, Theme.ball, 60f, 1.4f);
-        Fx.Popup("+2", px, hoop.y + Cfg.NET_H + 140f, Theme.ink, 34f, 1.2f);
-        Fx.Burst(hoop.x, hoop.y + 10f, 50);
-        shake = Mathf.Max(shake, 4f);
-        Audio.Play(Snd.Score2);
-        Audio.Play(Snd.Swish);
-    }
-    else
-    {
-        Fx.Popup("+1", px, hoop.y + Cfg.NET_H + 70f, Theme.ink, 30f, 1.1f);
-        Fx.Burst(hoop.x, hoop.y + 10f, 14);
-        Audio.Play(Snd.Score1);
-    }
+        scored = true;
 
-    if (prev < 5 && score >= 5) Fx.Popup("HOOP IS MOVING!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
-    else if (prev < 12 && score >= 12) Fx.Popup("NOW UP AND DOWN!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
-    else if (prev < 20 && score >= 20) Fx.Popup("BOTH WAYS!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 36f, 2f);
-}
+        bool swish = !touched;          // no rim or board contact
+        int pts = swish ? 2 : 1;
+        int prev = score;
+
+        score += pts;       // Current game score
+        Store.Add(pts);     // Coins earned
+        earned += pts;
+
+        if (swish) swishes++;
+        else rimIns++;
+
+        netBounce = swish ? 1.6f : 1f;  // net snaps harder on a swish
+        phase = Phase.Settle; resolveT = 1.05f;
+
+        float px = Mathf.Clamp(hoop.x, 80f, 280f);
+
+        if (swish)
+        {
+            // Big centered callout, a smaller +2 under it, a larger burst and a screen punch
+            Fx.Popup("SWISH!", Cfg.WW / 2f, hoop.y + Cfg.NET_H + 90f, Theme.ball, 60f, 1.4f);
+            Fx.Popup("+2", px, hoop.y + Cfg.NET_H + 140f, Theme.ink, 34f, 1.2f);
+            Fx.Burst(hoop.x, hoop.y + 10f, 50);
+            shake = Mathf.Max(shake, 4f);
+            Audio.Play(Snd.Score2);
+            Audio.Play(Snd.Swish);
+        }
+        else
+        {
+            Fx.Popup("+1", px, hoop.y + Cfg.NET_H + 70f, Theme.ink, 30f, 1.1f);
+            Fx.Burst(hoop.x, hoop.y + 10f, 14);
+            Audio.Play(Snd.Score1);
+        }
+
+        if (prev < 5 && score >= 5) Fx.Popup("HOOP IS MOVING!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
+        else if (prev < 12 && score >= 12) Fx.Popup("NOW UP AND DOWN!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
+        else if (prev < 20 && score >= 20) Fx.Popup("BOTH WAYS!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 36f, 2f);
+    }
 
     void OnMiss()
     {
@@ -457,10 +467,12 @@ public class SwishGame : MonoBehaviour
 
     // ---------------- HUD + shop (simple on-screen GUI for now) ----------------
     GUIStyle sBig, sMid, sHuge, sBtn, sTitle, sTiny, sLeft;
+    GUIStyle panelStyle, cardStyle, selStyle;
     float styleScale;
 
     static Texture2D panelTexture;
     static Texture2D cardTexture;
+    static Texture2D selTexture;
     static Texture2D buttonTexture;
     static Texture2D buttonHoverTexture;
 
@@ -471,51 +483,75 @@ public class SwishGame : MonoBehaviour
 
     static readonly Color gold = new Color(1f, .76f, .1f);
 
-    Texture2D MakeRoundedTexture(Color color, int size = 64)
+    // Rounded rectangle with an anti-aliased edge. radius is in texture pixels.
+    Texture2D MakeRoundedTexture(Color color, int size, float radius)
     {
         Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
 
-        float radius = size * 0.22f;
-
+        Color[] px = new Color[size * size];
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
             {
-                float px = Mathf.Clamp(x, radius, size - radius);
-                float py = Mathf.Clamp(y, radius, size - radius);
+                float fx = x + .5f, fy = y + .5f;
+                float qx = Mathf.Clamp(fx, radius, size - radius);
+                float qy = Mathf.Clamp(fy, radius, size - radius);
+                float d = Mathf.Sqrt((fx - qx) * (fx - qx) + (fy - qy) * (fy - qy));
 
-                float d = Vector2.Distance(new Vector2(x, y), new Vector2(px, py));
                 Color c = color;
-                c.a *= 1f - Mathf.Clamp01(d - radius + 1f);
-
-                tex.SetPixel(x, y, c);
+                c.a *= Mathf.Clamp01(radius - d + .5f);
+                px[y * size + x] = c;
             }
         }
 
+        tex.SetPixels(px);
         tex.Apply();
         return tex;
+    }
+
+    static int Bd(float radius) { return Mathf.CeilToInt(radius) + 1; }
+
+    Texture2D Rounded(Color color, float radius)
+    {
+        return MakeRoundedTexture(color, Bd(radius) * 2 + 2, radius);
+    }
+
+    GUIStyle BoxStyle(Texture2D tex, float radius)
+    {
+        int b = Bd(radius);
+        GUIStyle st = new GUIStyle();
+        st.normal.background = tex;
+        st.border = new RectOffset(b, b, b, b);     // 9-slice: corners stay round at any size
+        return st;
+    }
+
+    static void Kill(ref Texture2D t)
+    {
+        if (t != null) Destroy(t);
+        t = null;
     }
 
     void BuildStyles(float s)
     {
         styleScale = s;
 
-        if (panelTexture == null)
-            panelTexture = MakeRoundedTexture(
-                new Color(0.055f, 0.085f, 0.14f, 0.97f));
+        // Rebuild textures at the current screen scale so the corners are sharp, not stretched.
+        Kill(ref panelTexture); Kill(ref cardTexture); Kill(ref selTexture);
+        Kill(ref buttonTexture); Kill(ref buttonHoverTexture);
 
-        if (cardTexture == null)
-            cardTexture = MakeRoundedTexture(
-                new Color(0.12f, 0.16f, 0.23f, 1f));
+        float rPanel = 22f * s, rCard = 14f * s, rSel = 16f * s, rBtn = 12f * s;
 
-        if (buttonTexture == null)
-            buttonTexture = MakeRoundedTexture(
-                new Color(0.95f, 0.32f, 0.12f, 1f));
+        panelTexture = Rounded(new Color(0.055f, 0.085f, 0.14f, 0.97f), rPanel);
+        cardTexture = Rounded(new Color(0.12f, 0.16f, 0.23f, 1f), rCard);
+        selTexture = Rounded(gold, rSel);
+        buttonTexture = Rounded(new Color(0.95f, 0.32f, 0.12f, 1f), rBtn);
+        buttonHoverTexture = Rounded(new Color(1f, 0.48f, 0.20f, 1f), rBtn);
 
-        if (buttonHoverTexture == null)
-            buttonHoverTexture = MakeRoundedTexture(
-                new Color(1f, 0.48f, 0.20f, 1f));
+        panelStyle = BoxStyle(panelTexture, rPanel);
+        cardStyle = BoxStyle(cardTexture, rCard);
+        selStyle = BoxStyle(selTexture, rSel);
 
         sBig = new GUIStyle(GUI.skin.label)
         {
@@ -559,13 +595,14 @@ public class SwishGame : MonoBehaviour
             alignment = TextAnchor.MiddleLeft
         };
 
+        int bb = Bd(rBtn);
         sBtn = new GUIStyle(GUI.skin.button)
         {
             fontSize = Mathf.RoundToInt(18 * s),
             fontStyle = FontStyle.Bold,
             alignment = TextAnchor.MiddleCenter,
             padding = new RectOffset(12, 12, 10, 10),
-            border = new RectOffset(18, 18, 18, 18)
+            border = new RectOffset(bb, bb, bb, bb)
         };
 
         sBtn.normal.background = buttonTexture;
@@ -581,9 +618,10 @@ public class SwishGame : MonoBehaviour
 
     void DrawPanel(Rect r, Texture2D texture)
     {
+        // snap to whole pixels so the edges stay crisp
+        r = new Rect(Mathf.Round(r.x), Mathf.Round(r.y), Mathf.Round(r.width), Mathf.Round(r.height));
         GUI.color = Color.white;
-        GUI.DrawTexture(r, texture, ScaleMode.StretchToFill, true);
-        GUI.color = Color.white;
+        GUI.Box(r, GUIContent.none, texture == cardTexture ? cardStyle : panelStyle);
     }
 
     void Lbl(Rect r, string t, GUIStyle st, Color c)
@@ -822,11 +860,13 @@ public class SwishGame : MonoBehaviour
 
             if (sel)
             {
-                GUI.color = gold;
-                GUI.DrawTexture(
+                // rounded gold outline behind the selected card
+                GUI.color = Color.white;
+                GUI.Box(
                     new Rect(r.x - 2 * s, r.y - 2 * s,
                              r.width + 4 * s, r.height + 4 * s),
-                    Texture2D.whiteTexture
+                    GUIContent.none,
+                    selStyle
                 );
             }
 

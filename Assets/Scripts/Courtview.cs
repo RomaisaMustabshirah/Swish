@@ -148,19 +148,20 @@ public class CourtView
         glow.transform.localScale = Vector3.one * (520f * Cfg.S);
         glow.color = new Color(1f, .93f, .7f, Mathf.Lerp(.03f, .26f, t));
 
-        // stand: fixed pole on the right + boom arm to the moving backboard
+        // stand: pole fixed in the middle of the screen, BEHIND the basket.
+        // The basket (rim, net, board) is drawn in front of it and swings on a boom arm.
         Color steel = Color.Lerp(steelDay, steelNight, t);
         Color steelDark = Color.Lerp(steel, Color.black, .25f);
-        float poleX = bx + Cfg.BOARD_W / 2f;
-        float poleTop = g.hoop.baseY - 78f;
+        float poleX = h.baseX;
+        float poleTop = h.baseY - 78f;
         SetRect(pole, poleX - 4.5f, poleTop, 9f, Cfg.GROUND - poleTop, steel);
         cap.transform.position = Cfg.W(poleX, poleTop);
         cap.transform.localScale = Vector3.one * (14f * Cfg.S);
         cap.color = steel;
         SetRect(baseR, poleX - 24f, Cfg.GROUND - 12f, 48f, 12f, steelDark);
         SetRect(padding, poleX - 6.5f, Cfg.GROUND - 76f, 13f, 64f, Theme.hoop);
-        arm.Set(new Vector2(poleX, poleTop + 6f), new Vector2(bx + Cfg.BOARD_W / 2f, h.y - 34f), 7f, steel);
-        brace.Set(new Vector2(poleX, poleTop + 150f), new Vector2(bx + Cfg.BOARD_W / 2f, h.y + 12f), 5f, steel);
+        arm.Set(new Vector2(poleX, poleTop + 6f), new Vector2(bx, h.y - 34f), 7f, steel);
+        brace.Set(new Vector2(poleX, poleTop + 150f), new Vector2(bx, h.y + 12f), 5f, steel);
 
         // board, stem, strip, rim bar
         SetRect(stem, h.x + Cfg.RIM_HALF, h.y - 3f, bx - Cfg.BOARD_W / 2f - (h.x + Cfg.RIM_HALF) + 1f, 6f, Theme.hoopDark);
@@ -183,13 +184,10 @@ public class CourtView
         ballR.enabled = show; shadow.enabled = show;
         if (show)
         {
-            float hf = Mathf.Clamp01((Cfg.GROUND - Cfg.R - b.y) / 380f);
+            float hf = Mathf.Clamp01((g.RestY - b.y) / 380f);
 
-            // At rest the ball sits in the inner circle (GROUND + 34), so the shadow
-            // follows it there. Once the ball is in play it returns to GROUND + 9.
-            float restDepth = Mathf.Clamp01((b.y - (Cfg.GROUND - Cfg.R)) / 34f);
-            shadow.transform.position = Cfg.W(b.x, Cfg.GROUND + 9f + 25f * restDepth);
-
+            // the ball now bounces on the inner circle level, so the shadow stays there
+            shadow.transform.position = Cfg.W(b.x, Cfg.GROUND + 34f + 6f);
             shadow.transform.localScale = new Vector3(2f * Cfg.R * (1.15f - hf * .45f) * s * Cfg.S,
                                                       2f * Cfg.R * .28f * s * Cfg.S, 1f);
             shadow.color = new Color(0, 0, 0, .3f * (1f - hf * .75f));
