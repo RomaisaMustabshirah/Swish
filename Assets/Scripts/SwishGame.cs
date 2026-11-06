@@ -31,6 +31,9 @@ public class SwishGame : MonoBehaviour
     const float NIGHT_AT = 30f;                             // score at which it is full night
     Vector2 aimDown, aimCur;
 
+    // Resting spot: ball's bottom touches the centre of the inner circle
+    float RestY { get { return Cfg.GROUND + 34f - Cfg.R; } }
+
     bool ending, touched;
     public bool scored;
     float resolveT, flight, hopT, lastHit, lastFloor;
@@ -76,31 +79,31 @@ public class SwishGame : MonoBehaviour
     }
 
     void Layout()
-{
-    lastW = Screen.width; lastH = Screen.height;
-    float aspect = (float)Screen.width / Screen.height;
-    float ch = Mathf.Clamp(Cfg.WW / Cfg.ZOOM / aspect, 470f, 640f);   // visible height in game px
-    float visW = ch * aspect;
+    {
+        lastW = Screen.width; lastH = Screen.height;
+        float aspect = (float)Screen.width / Screen.height;
+        float ch = Mathf.Clamp(Cfg.WW / Cfg.ZOOM / aspect, 470f, 640f);   // visible height in game px
+        float visW = ch * aspect;
 
-    Cfg.WH = 640f;
-    Cfg.GROUND = 570f;
-    Cfg.Y0 = Cfg.WH - ch;
-    float half = Mathf.Min(visW * .5f, Cfg.WW * .5f);
-    Cfg.X0 = Cfg.WW * .5f - half;
-    Cfg.X1 = Cfg.WW * .5f + half;
+        Cfg.WH = 640f;
+        Cfg.GROUND = 570f;
+        Cfg.Y0 = Cfg.WH - ch;
+        float half = Mathf.Min(visW * .5f, Cfg.WW * .5f);
+        Cfg.X0 = Cfg.WW * .5f - half;
+        Cfg.X1 = Cfg.WW * .5f + half;
 
-    hoop.baseY = Mathf.Round(Cfg.Y0 + ch * .27f);
-    hoop.baseX = Cfg.WW / 2f - 18f;
-    float h = (Cfg.GROUND - Cfg.R) - (hoop.baseY - 36f - 30f);
-    Cfg.MAXSPEED = Mathf.Sqrt(2f * Cfg.G * Mathf.Max(140f, h)) * 1.2f;
+        hoop.baseY = Mathf.Round(Cfg.Y0 + ch * .27f);
+        hoop.baseX = Cfg.WW / 2f - 18f;
+        float h = (Cfg.GROUND - Cfg.R) - (hoop.baseY - 36f - 30f);
+        Cfg.MAXSPEED = Mathf.Sqrt(2f * Cfg.G * Mathf.Max(140f, h)) * 1.2f;
 
-    cam.orthographicSize = Cfg.S * ch / 2f;
-    camBase = new Vector3(0f, (ch - Cfg.WH) * .5f * Cfg.S, -10f);
-    cam.transform.position = camBase;
+        cam.orthographicSize = Cfg.S * ch / 2f;
+        camBase = new Vector3(0f, (ch - Cfg.WH) * .5f * Cfg.S, -10f);
+        cam.transform.position = camBase;
 
-    if (mode != Mode.Play || phase == Phase.Ready) ball.y = Cfg.GROUND - Cfg.R;
-    view.Layout();
-}
+        if (mode != Mode.Play || phase == Phase.Ready) ball.y = RestY;
+        view.Layout();
+    }
 
     // ---------------- main loop ----------------
     void Update()
@@ -122,18 +125,18 @@ public class SwishGame : MonoBehaviour
         shake = Mathf.Max(0f, shake - dt * 22f);
 
         if (mode == Mode.Home || mode == Mode.Settings)
-    {
-        Advance(dt);
-        hopT += dt;
+        {
+            Advance(dt);
+            hopT += dt;
 
-        ball.x = Cfg.WW / 2f;
-        ball.y = Cfg.GROUND + 34f
-            - 72f * ((hopT * 0.85f) % 1f)
-            * (1f - ((hopT * 0.85f) % 1f));
+            ball.x = Cfg.WW / 2f;
+            ball.y = RestY
+                - 72f * ((hopT * 0.85f) % 1f)
+                * (1f - ((hopT * 0.85f) % 1f));
 
-        ball.rot += dt * 2.4f;
-        ballPop = 1f;
-    }
+            ball.rot += dt * 2.4f;
+            ballPop = 1f;
+        }
         else if (mode == Mode.Play)
         {
             if (phase == Phase.Ready) ballPop = Mathf.Min(1f, ballPop + dt * 4.5f);
@@ -284,7 +287,7 @@ public class SwishGame : MonoBehaviour
     void ResetBall()
     {
         ball.x = Cfg.WW / 2f;
-        ball.y = Cfg.GROUND - Cfg.R;
+        ball.y = RestY;
 
         ball.vx = 0f;
         ball.vy = 0f;
@@ -307,32 +310,47 @@ public class SwishGame : MonoBehaviour
         Audio.Play(Snd.Shoot);
     }
 
-    void OnScore()
+   void OnScore()
 {
     scored = true;
 
-    int pts = touched ? 1 : 2;
+    bool swish = !touched;          // no rim or board contact
+    int pts = swish ? 2 : 1;
     int prev = score;
 
     score += pts;       // Current game score
     Store.Add(pts);     // Coins earned
     earned += pts;
 
-    if (pts == 2) swishes++;
+    if (swish) swishes++;
     else rimIns++;
 
-    
-        netBounce = 1f; phase = Phase.Settle; resolveT = 1.05f;
-        float px = Mathf.Clamp(hoop.x, 80f, 280f);
-        Fx.Popup(pts == 2 ? "SWISH +2" : "+1", px, hoop.y + Cfg.NET_H + 70f,
-                 pts == 2 ? Theme.ball : Theme.ink, pts == 2 ? 34f : 30f, 1.1f);
-        Fx.Burst(hoop.x, hoop.y + 10f, pts == 2 ? 30 : 14);
-        Audio.Play(pts == 2 ? Snd.Score2 : Snd.Score1);
-        if (pts == 2) Audio.Play(Snd.Swish);
-        if (prev < 5 && score >= 5) Fx.Popup("HOOP IS MOVING!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
-        else if (prev < 12 && score >= 12) Fx.Popup("NOW UP AND DOWN!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
-        else if (prev < 20 && score >= 20) Fx.Popup("BOTH WAYS!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 36f, 2f);
+    netBounce = swish ? 1.6f : 1f;  // net snaps harder on a swish
+    phase = Phase.Settle; resolveT = 1.05f;
+
+    float px = Mathf.Clamp(hoop.x, 80f, 280f);
+
+    if (swish)
+    {
+        // Big centered callout, a smaller +2 under it, a larger burst and a screen punch
+        Fx.Popup("SWISH!", Cfg.WW / 2f, hoop.y + Cfg.NET_H + 90f, Theme.ball, 60f, 1.4f);
+        Fx.Popup("+2", px, hoop.y + Cfg.NET_H + 140f, Theme.ink, 34f, 1.2f);
+        Fx.Burst(hoop.x, hoop.y + 10f, 50);
+        shake = Mathf.Max(shake, 4f);
+        Audio.Play(Snd.Score2);
+        Audio.Play(Snd.Swish);
     }
+    else
+    {
+        Fx.Popup("+1", px, hoop.y + Cfg.NET_H + 70f, Theme.ink, 30f, 1.1f);
+        Fx.Burst(hoop.x, hoop.y + 10f, 14);
+        Audio.Play(Snd.Score1);
+    }
+
+    if (prev < 5 && score >= 5) Fx.Popup("HOOP IS MOVING!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
+    else if (prev < 12 && score >= 12) Fx.Popup("NOW UP AND DOWN!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 34f, 2f);
+    else if (prev < 20 && score >= 20) Fx.Popup("BOTH WAYS!", Cfg.WW / 2f, Cfg.WH * .5f, Theme.ink, 36f, 2f);
+}
 
     void OnMiss()
     {
@@ -394,10 +412,10 @@ public class SwishGame : MonoBehaviour
 
     Vector2 ScreenToGame(Vector2 sp)
     {
-    float wh = cam.orthographicSize * 2f;
-    float wx = (sp.x - Screen.width * .5f) / Screen.height * wh + camBase.x;
-    float wy = (sp.y - Screen.height * .5f) / Screen.height * wh + camBase.y;
-    return new Vector2(wx / Cfg.S + Cfg.WW / 2f, Cfg.WH / 2f - wy / Cfg.S);
+        float wh = cam.orthographicSize * 2f;
+        float wx = (sp.x - Screen.width * .5f) / Screen.height * wh + camBase.x;
+        float wy = (sp.y - Screen.height * .5f) / Screen.height * wh + camBase.y;
+        return new Vector2(wx / Cfg.S + Cfg.WW / 2f, Cfg.WH / 2f - wy / Cfg.S);
     }
 
     void HandleInput()
@@ -411,16 +429,16 @@ public class SwishGame : MonoBehaviour
         Vector2 guiPos = new Vector2(sp.x, Screen.height - sp.y);
 
         Rect pauseRect = new Rect(
-        Screen.width - 48f * guiS,
-        top + 58f * guiS,
-        34f * guiS,
-        34f * guiS
+            Screen.width - 48f * guiS,
+            top + 58f * guiS,
+            34f * guiS,
+            34f * guiS
         );
 
         if (pressed && pauseRect.Contains(guiPos))
-        return;
+            return;
 
-    Vector2 gp = ScreenToGame(sp);
+        Vector2 gp = ScreenToGame(sp);
 
         if (phase == Phase.Ready && pressed && ballPop >= .6f)
         {
@@ -436,6 +454,7 @@ public class SwishGame : MonoBehaviour
             }
         }
     }
+
     // ---------------- HUD + shop (simple on-screen GUI for now) ----------------
     GUIStyle sBig, sMid, sHuge, sBtn, sTitle, sTiny, sLeft;
     float styleScale;
@@ -450,35 +469,33 @@ public class SwishGame : MonoBehaviour
     string shopMsg = "";
     float shopMsgT;
 
-    static readonly Color gold = new Color(1f, .76f, .1f);    
-    
+    static readonly Color gold = new Color(1f, .76f, .1f);
+
     Texture2D MakeRoundedTexture(Color color, int size = 64)
-
-{
-    Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
-    tex.wrapMode = TextureWrapMode.Clamp;
-
-    float radius = size * 0.22f;
-
-    for (int y = 0; y < size; y++)
     {
-        for (int x = 0; x < size; x++)
+        Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+
+        float radius = size * 0.22f;
+
+        for (int y = 0; y < size; y++)
         {
-            float px = Mathf.Clamp(x, radius, size - radius);
-            float py = Mathf.Clamp(y, radius, size - radius);
+            for (int x = 0; x < size; x++)
+            {
+                float px = Mathf.Clamp(x, radius, size - radius);
+                float py = Mathf.Clamp(y, radius, size - radius);
 
-            float d = Vector2.Distance(new Vector2(x, y), new Vector2(px, py));
-            Color c = color;
-            c.a *= 1f - Mathf.Clamp01(d - radius + 1f);
+                float d = Vector2.Distance(new Vector2(x, y), new Vector2(px, py));
+                Color c = color;
+                c.a *= 1f - Mathf.Clamp01(d - radius + 1f);
 
-            tex.SetPixel(x, y, c);
+                tex.SetPixel(x, y, c);
+            }
         }
+
+        tex.Apply();
+        return tex;
     }
-
-    tex.Apply();
-    return tex;
-}
-
 
     void BuildStyles(float s)
     {
@@ -561,6 +578,7 @@ public class SwishGame : MonoBehaviour
         sBtn.active.textColor = Color.white;
         sBtn.focused.textColor = Color.white;
     }
+
     void DrawPanel(Rect r, Texture2D texture)
     {
         GUI.color = Color.white;
@@ -610,40 +628,40 @@ public class SwishGame : MonoBehaviour
             GUI.DrawTexture(new Rect(left + 16 * s, top + 28 * s, 16 * s, 16 * s), Art.CircleTex,
                             ScaleMode.StretchToFill, true, 0f, gold, 0f, 0f);
             Lbl(new Rect(left + 38 * s, top + 24 * s, 100 * s, 24 * s), Store.coins.ToString(), sLeft, Theme.ink);
-            
         }
+
         if (mode == Mode.Play)
-    {
-        Rect pauseRect = new Rect(
-            right - 58f * s,
-            top + 20f * s,
-            38f * s,
-            38f * s
-        );
-
-        if (GUI.Button(pauseRect, GUIContent.none, GUIStyle.none))
         {
-            mode = Mode.Pause;
-            Audio.Play(Snd.Click);
+            Rect pauseRect = new Rect(
+                right - 58f * s,
+                top + 20f * s,
+                38f * s,
+                38f * s
+            );
+
+            if (GUI.Button(pauseRect, GUIContent.none, GUIStyle.none))
+            {
+                mode = Mode.Pause;
+                Audio.Play(Snd.Click);
+            }
+
+            // Draw pause icon
+            GUI.color = Theme.ink;
+
+            GUI.DrawTexture(
+                new Rect(pauseRect.x + 11f * s, pauseRect.y + 9f * s,
+                         5f * s, 20f * s),
+                Texture2D.whiteTexture
+            );
+
+            GUI.DrawTexture(
+                new Rect(pauseRect.x + 22f * s, pauseRect.y + 9f * s,
+                         5f * s, 20f * s),
+                Texture2D.whiteTexture
+            );
+
+            GUI.color = Color.white;
         }
-
-        // Draw pause icon
-        GUI.color = Theme.ink;
-
-        GUI.DrawTexture(
-            new Rect(pauseRect.x + 11f * s, pauseRect.y + 9f * s,
-                     5f * s, 20f * s),
-            Texture2D.whiteTexture
-        );
-
-        GUI.DrawTexture(
-            new Rect(pauseRect.x + 22f * s, pauseRect.y + 9f * s,
-                     5f * s, 20f * s),
-            Texture2D.whiteTexture
-        );
-
-        GUI.color = Color.white;
-    }
 
         // small hint, only before the player touches the screen
         if (mode == Mode.Play && !hintSeen && phase == Phase.Ready)
@@ -651,16 +669,16 @@ public class SwishGame : MonoBehaviour
 
         Fx.Gui(s, top);
 
-         if (mode == Mode.Home)
-         {
-           DrawHome(s, cx, top, H);
-           return;
-         }
+        if (mode == Mode.Home)
+        {
+            DrawHome(s, cx, top, H);
+            return;
+        }
 
         if (mode == Mode.Over) DrawOver(s, cx, top, H, soft);
         if (mode == Mode.Shop) DrawShop(s, left, cx, top, H, soft);
         if (mode == Mode.Pause)
-        DrawPause(s, cx, top, H);
+            DrawPause(s, cx, top, H);
     }
 
     void DrawOver(float s, float cx, float top, float H, Color soft)
@@ -716,8 +734,8 @@ public class SwishGame : MonoBehaviour
 
         Lbl(
             new Rect(px, py + 258 * s, panelW, 28 * s),
-             "+" + earned + " COINS",
-             sMid,
+            "+" + earned + " COINS",
+            sMid,
             gold
         );
 
@@ -730,7 +748,7 @@ public class SwishGame : MonoBehaviour
         }
 
         if (GUI.Button(
-             new Rect(cx - 115 * s, py + 356 * s, 230 * s, 38 * s),
+            new Rect(cx - 115 * s, py + 356 * s, 230 * s, 38 * s),
             "BALL COLLECTION",
             sBtn))
         {
@@ -739,12 +757,12 @@ public class SwishGame : MonoBehaviour
             mode = Mode.Shop;
         }
 
-         if (GUI.Button(
-             new Rect(cx - 115 * s, py + 401 * s, 230 * s, 30 * s),
+        if (GUI.Button(
+            new Rect(cx - 115 * s, py + 401 * s, 230 * s, 30 * s),
             "HOME",
             sBtn))
         {
-             mode = Mode.Home;
+            mode = Mode.Home;
             ResetBall();
         }
 
@@ -759,7 +777,7 @@ public class SwishGame : MonoBehaviour
         float px = cx - panelW * 0.5f;
         float py = top + 12 * s;
 
-         DrawPanel(
+        DrawPanel(
             new Rect(px, py, panelW, panelH),
             panelTexture
         );
@@ -767,11 +785,11 @@ public class SwishGame : MonoBehaviour
         Lbl(
             new Rect(px, py + 12 * s, panelW, 42 * s),
             "BALL COLLECTION",
-             sTitle,
+            sTitle,
             Theme.ink
         );
 
-         Lbl(
+        Lbl(
             new Rect(px, py + 54 * s, panelW, 25 * s),
             Store.coins + " COINS",
             sMid,
@@ -797,9 +815,9 @@ public class SwishGame : MonoBehaviour
                 py + 88 * s + row * (ch + 9 * s),
                 cw,
                 ch
-             );
+            );
 
-             bool owned = Store.Owned(i);
+            bool owned = Store.Owned(i);
             bool sel = Store.selected == i;
 
             if (sel)
@@ -832,7 +850,7 @@ public class SwishGame : MonoBehaviour
             GUI.color = Color.white;
 
             Lbl(
-                 new Rect(r.x, r.y + 52 * s, cw, 16 * s),
+                new Rect(r.x, r.y + 52 * s, cw, 16 * s),
                 sk.name.ToUpper(),
                 sTiny,
                 soft
@@ -874,6 +892,7 @@ public class SwishGame : MonoBehaviour
         GUI.color = Color.white;
         GUI.backgroundColor = Color.white;
     }
+
     void OnShopTap(int i)
     {
         if (Store.Owned(i))
@@ -891,7 +910,7 @@ public class SwishGame : MonoBehaviour
             shopMsg = "NOT ENOUGH COINS"; shopMsgT = Time.time + 1.5f;
         }
     }
-    
+
     void DrawHome(float s, float cx, float top, float H)
     {
         float panelW = 310f * s;
@@ -964,6 +983,7 @@ public class SwishGame : MonoBehaviour
 
         GUI.backgroundColor = Color.white;
     }
+
     void DrawPause(float s, float cx, float top, float H)
     {
         float panelW = 300f * s;

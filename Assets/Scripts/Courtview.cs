@@ -184,7 +184,12 @@ public class CourtView
         if (show)
         {
             float hf = Mathf.Clamp01((Cfg.GROUND - Cfg.R - b.y) / 380f);
-            shadow.transform.position = Cfg.W(b.x, Cfg.GROUND + 9f);
+
+            // At rest the ball sits in the inner circle (GROUND + 34), so the shadow
+            // follows it there. Once the ball is in play it returns to GROUND + 9.
+            float restDepth = Mathf.Clamp01((b.y - (Cfg.GROUND - Cfg.R)) / 34f);
+            shadow.transform.position = Cfg.W(b.x, Cfg.GROUND + 9f + 25f * restDepth);
+
             shadow.transform.localScale = new Vector3(2f * Cfg.R * (1.15f - hf * .45f) * s * Cfg.S,
                                                       2f * Cfg.R * .28f * s * Cfg.S, 1f);
             shadow.color = new Color(0, 0, 0, .3f * (1f - hf * .75f));
@@ -206,6 +211,7 @@ public class CourtView
         {
             net[i].sr.sortingOrder = ballInNet ? 16 : 14;
         }
+
         // net
         const int N = 6, K = 4;
         int idx = 0;
