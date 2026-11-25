@@ -1,7 +1,8 @@
 // Swish hand mode: play completely touch-free through the webcam.
-//   Pinch (thumb + index)       -> touch: press any button, or grab the ball
-//   Flick up while holding      -> throw. A longer flick = more power, a sideways flick = angle
-//   Open without flicking       -> put the ball back down (no accidental weak shots)
+//   Pinch (thumb + index)   -> touch: press any button, and lock the ball in your hand
+//   Relax your fingers      -> the ball stays locked
+//   Quick flick up          -> throw. A longer flick = more power, a sideways flick = angle
+//   Hand out of view 1 s    -> drop the ball
 // Everything runs in the browser. The camera feed is never uploaded.
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
@@ -14,10 +15,10 @@ const GAME_OBJECT = "Swish Street";   // created in SwishGame.Boot()
 export const TUNING = {
   SHOT_GAIN: 1.3,       // flick length -> throw power. Throws too weak? raise it. Too strong? lower it.
   MIN_RISE: 0.07,       // smallest upward flick that throws (fraction of the camera height)
+  FLICK_TIME: 0.45,     // the rise must happen within this many seconds (slow movements never throw)
   STILL: 0.008,         // the hand moving less than this per frame = the flick has ended
-  MAX_TIME: 0.6,        // seconds: a flick longer than this ends and throws
-  GRACE: 0.3,           // seconds after the fingers open in which a flick still counts
-  COOLDOWN: 0.5,        // seconds after a throw before the next grab
+  COOLDOWN: 0.5,        // seconds after a throw before the next one
+  UNLOCK_AFTER: 1.0,    // seconds out of view before a locked ball is dropped
   CURSOR_GAIN: 1.5,     // how far the cursor moves for a hand movement
   SMOOTH: 0.5,          // 0..1, higher = cursor follows the hand more tightly, lower = steadier
   PINCH_ON: 0.32,       // thumb-index gap (÷ palm size) below this = pinched
@@ -41,56 +42,68 @@ export function pinchGap(pts) {
 
 /**
  * Turns hand frames into the game's touch messages "touch,x,y" (x, y = 0..1 across the game, y from the top).
- * Pinch = touch down at the cursor. While holding, a flick is measured; when it ends, the touch is moved
- * by the flick and lifted, which the game turns into a throw (exactly like a drag + release on screen).
+ *  - A pinch is a real touch, so it presses buttons, and it also LOCKS the ball in your hand.
+ *  - While locked you can relax your fingers. A quick upward flick throws: the tracker sends
+ *    touch-down at the grab point, moves it by the flick, and lifts it. The game sees that as a drag + release.
  */
-export class HoldFlickTracker {
+export class LockFlickTracker {
   constructor(tuning = TUNING) { this.t = tuning; this.lastThrow = -1e9; this.reset(); }
 
   reset() {
-    this.pinch = false; this.holding = false; this.openedAt = null;
-    this.anchor = null; this.path = []; this.release = null;
-    this.pos = null; this.visible = false;
+    this.pinch = false; this.locked = false; this.anchor = null; this.path = [];
+    this.queue = []; this.waitOpen = false; this.pos = null; this.visible = false; this.lostAt = null;
   }
 
   _msg(down, p) { return `${down ? 1 : 0},${p[0].toFixed(4)},${p[1].toFixed(4)}`; }
 
-  /** The flick so far: from the lowest point of the path to the latest point (camera-height units). */
-  _flick() {
-    let low = this.path[0];
-    for (const q of this.path) if (q.y > low.y) low = q;
-    const end = this.path[this.path.length - 1];
-    return { low, end, rise: low.y - end.y };
+  /** The quick flick in the last FLICK_TIME seconds: lowest point -> latest point (camera-height units). */
+  _flick(now) {
+    const recent = this.path.filter((q) => now - q.t <= this.t.FLICK_TIME);
+    if (recent.length < 2) return null;
+    let low = recent[0];
+    for (const q of recent) if (q.y > low.y) low = q;
+    const end = recent[recent.length - 1];
+    const prev = recent[recent.length - 2];
+    return { low, end, rise: low.y - end.y, stopped: prev.y - end.y <= this.t.STILL };
   }
 
-  _throw(now, aspect) {
-    const { low, end } = this._flick();
+  _throw(now, f, aspect) {
     const g = this.t.SHOT_GAIN;
+    const a = this.anchor;
     // The game measures drags in screen heights; x is converted to the canvas width.
-    const target = [clamp01(this.anchor[0] + (end.x - low.x) * g / aspect), clamp01(this.anchor[1] + (end.y - low.y) * g)];
-    this.release = target;              // next frame: lift the touch here -> the ball flies
-    this.holding = false; this.path = []; this.lastThrow = now;
-    return this._msg(true, target);     // this frame: move the held touch to the end of the flick
+    const target = [clamp01(a[0] + (f.end.x - f.low.x) * g / aspect), clamp01(a[1] + (f.end.y - f.low.y) * g)];
+    if (!this.pinch) this.queue.push(this._msg(true, a));   // fingers open: touch down at the grab point first
+    this.queue.push(this._msg(true, target), this._msg(false, target));
+    this.locked = false; this.path = []; this.lastThrow = now;
+    this.waitOpen = this.pinch;                            // don't start a new touch until the fingers open
+    return this.queue.shift();
   }
 
   /** pts: 21 [x, y] camera points (unmirrored) or null; w, h: camera size; aspect: game canvas width / height. */
   update(now, pts, w, h, aspect = 1.6) {
-    // Finish a throw: lift the touch one frame after moving it.
-    if (this.release) { const p = this.release; this.release = null; this.pinch = false; return this._msg(false, p); }
+    if (this.queue.length) return this.queue.shift();      // finish a throw first, one step per frame
 
     if (!pts) {
       // A fast flick often blurs out of view: if it already rose enough, throw it.
-      if (this.holding && this.path.length >= 2 && this._flick().rise >= this.t.MIN_RISE) return this._throw(now, aspect);
-      const msg = this.holding ? this._msg(false, this.anchor) : this.visible ? "off" : null;
-      this.reset();
+      if (this.locked) {
+        const f = this._flick(now);
+        if (f && f.rise >= this.t.MIN_RISE && now - this.lastThrow >= this.t.COOLDOWN) return this._throw(now, f, aspect);
+      }
+      if (this.lostAt === null) this.lostAt = now;
+      if (now - this.lostAt > this.t.UNLOCK_AFTER) this.locked = false;   // hand gone a while: drop the ball
+      let msg = null;
+      if (this.pinch) { this.pinch = false; msg = this._msg(false, this.anchor || this.pos); }
+      else if (this.visible) { this.visible = false; msg = "off"; }
       return msg;
     }
-    this.visible = true;
+    this.visible = true; this.lostAt = null;
 
-    // Pinch state with hysteresis.
+    // Pinch with hysteresis.
     const gap = pinchGap(pts);
+    const wasPinch = this.pinch;
     if (this.pinch && gap > this.t.PINCH_OFF) this.pinch = false;
     else if (!this.pinch && gap < this.t.PINCH_ON) this.pinch = true;
+    if (!this.pinch) this.waitOpen = false;
 
     // Cursor: the point between thumb and index fingertips, mirrored like a mirror.
     const mid = [(pts[THUMB_TIP][0] + pts[INDEX_TIP][0]) / 2, (pts[THUMB_TIP][1] + pts[INDEX_TIP][1]) / 2];
@@ -98,31 +111,20 @@ export class HoldFlickTracker {
     const k = this.t.SMOOTH;
     this.pos = this.pos ? [this.pos[0] + (target[0] - this.pos[0]) * k, this.pos[1] + (target[1] - this.pos[1]) * k] : target;
 
-    // Grab: a new pinch starts holding (after the cooldown).
-    if (this.pinch && !this.holding && now - this.lastThrow >= this.t.COOLDOWN) {
-      this.holding = true; this.anchor = this.pos; this.path = []; this.openedAt = null;
-    }
-    if (!this.holding) return this._msg(false, this.pos);
+    // A new pinch locks the ball at this spot.
+    if (this.pinch && !wasPinch && !this.waitOpen) { this.locked = true; this.anchor = this.pos; this.path = []; }
 
-    // While holding: follow the hand in camera-height units (mirrored) to measure the flick.
-    this.path.push({ t: now, x: (w - mid[0]) / h, y: mid[1] / h });
-    while (this.path.length > 2 && now - this.path[0].t > this.t.MAX_TIME + 0.4) this.path.shift();
-    if (!this.pinch && this.openedAt === null) this.openedAt = now;
-
-    if (this.path.length >= 2) {
-      const { low, end, rise } = this._flick();
-      const prev = this.path[this.path.length - 2];
-      const stopped = prev.y - end.y <= this.t.STILL;
-      if (rise >= this.t.MIN_RISE && (stopped || now - low.t > this.t.MAX_TIME)) return this._throw(now, aspect);
+    if (this.locked) {
+      this.path.push({ t: now, x: (w - mid[0]) / h, y: mid[1] / h });
+      while (this.path.length > 2 && now - this.path[0].t > this.t.FLICK_TIME + 0.3) this.path.shift();
+      const f = this._flick(now);
+      if (f && f.rise >= this.t.MIN_RISE && now - this.lastThrow >= this.t.COOLDOWN &&
+          (f.stopped || now - f.low.t >= this.t.FLICK_TIME)) return this._throw(now, f, aspect);
     }
 
-    // Opened and no flick came within the grace time: put the ball back (a release with no drag).
-    if (this.openedAt !== null && now - this.openedAt > this.t.GRACE) {
-      const a = this.anchor;
-      this.holding = false; this.path = [];
-      return this._msg(false, a);
-    }
-    return this._msg(true, this.anchor);   // keep holding still at the grab point
+    // Normal touch: down while pinched (held at the grab point, so holding never drags), up when open.
+    const down = this.pinch && !this.waitOpen;
+    return this._msg(down, down && this.locked ? this.anchor : this.pos);
   }
 }
 
@@ -161,6 +163,8 @@ function injectUI(phone) {
       box-shadow: 0 0 0 2px rgba(0,0,0,.35); pointer-events: none; display: none;
       transition: transform .08s, background .08s; }
     #hand-cursor.pinch { transform: scale(.7); background: #ff914d; }
+    #hand-cursor.locked { border-color: #ff914d; background: rgba(255,145,77,.6); }
+    #hand-cursor.locked::after { content: "🔒"; position: absolute; left: 20px; top: -16px; font-size: 13px; }
     #hand-cursor.shot { animation: shot .35s ease-out; }
     @keyframes shot { from { box-shadow: 0 0 0 14px rgba(255,145,77,.45); } to { box-shadow: 0 0 0 2px rgba(0,0,0,.35); } }
     #hand-howto { position: fixed; inset: 0; z-index: 30; display: none; place-items: center;
@@ -184,7 +188,7 @@ function injectUI(phone) {
   panel.id = "hand-panel";
   panel.innerHTML = `<div class="hp-head" title="Show / hide the camera panel">✋ Hand mode <span>–</span></div>
     <canvas width="220" height="150"></canvas>
-    <div class="hp-body"><b>Pinch</b> to grab or press · <b>flick up</b> to throw<br><span id="hand-status">Starting…</span></div>`;
+    <div class="hp-body"><b>Pinch</b> to grab 🔒 or press · <b>flick up</b> to throw<br><span id="hand-status">Starting…</span></div>`;
   const head = panel.querySelector(".hp-head");
   const setMini = (mini) => {
     panel.classList.toggle("mini", mini);
@@ -198,9 +202,9 @@ function injectUI(phone) {
   const howto = document.createElement("div");
   howto.id = "hand-howto";
   howto.innerHTML = `<div class="card"><h3>✋ Hand mode</h3><ul>
-      <li>🤏 <b>Pinch</b> thumb + index finger to <b>grab</b> the ball</li>
-      <li>☝ <b>Flick up</b> while holding to <b>throw</b>. Longer flick = more power</li>
-      <li>🖐 <b>Open</b> without flicking to put the ball back</li>
+      <li>🤏 <b>Pinch</b> thumb + index finger to <b>grab</b> the ball. It locks 🔒 in your hand</li>
+      <li>🖐 <b>Relax</b> your fingers. The ball stays locked</li>
+      <li>☝ <b>Flick up</b> quickly to <b>throw</b>. Longer flick = more power</li>
       <li>🔘 <b>Pinch on any button</b> to press it: play, pause, shop</li></ul>
       <p>${phone ? "Prop your phone up so it stands on its own, then play with your hand in front of the camera."
                  : "Sit about an arm's length from the screen, in good light."}</p>
@@ -237,7 +241,7 @@ function start() {
   const video = document.createElement("video");
   video.playsInline = true; video.muted = true;
   const pctx = ui.preview.getContext("2d");
-  const tracker = new HoldFlickTracker();
+  const tracker = new LockFlickTracker();
   let landmarker = null, stream = null, running = false, lastTime = -1;
 
   function drawPreview(pts, w, h) {
@@ -265,7 +269,8 @@ function start() {
     ui.cursor.style.display = "block";
     ui.cursor.style.left = r.left + p[0] * r.width + "px";
     ui.cursor.style.top = r.top + p[1] * r.height + "px";
-    ui.cursor.classList.toggle("pinch", tracker.holding || tracker.pinch);
+    ui.cursor.classList.toggle("pinch", tracker.pinch);
+    ui.cursor.classList.toggle("locked", tracker.locked && !tracker.pinch);
   }
 
   function flash() {
@@ -291,7 +296,7 @@ function start() {
       drawPreview(pts, w, h);
       placeCursor();
       ui.status.textContent = !pts ? "Show your hand to the camera"
-        : tracker.holding ? "Holding: flick up to throw" : "Pinch to grab or press";
+        : tracker.locked ? "🔒 Ball locked: flick up to throw" : "Pinch to grab or press";
     }
     requestAnimationFrame(loop);
   }

@@ -14,9 +14,9 @@ and the day slowly fades into night.
 
 ### 🖐 Play with your hands (touch-free)
 Click **Play with hands** (🖐) at the top right of the game page and allow your camera:
-- 🤏 **Pinch** thumb and index finger to **grab** the ball
-- ☝ **Flick up** while holding to **throw**. A longer flick gives more power, a sideways flick angles the shot
-- 🖐 **Open** without flicking to put the ball back down
+- 🤏 **Pinch** thumb and index finger to **grab** the ball. It locks 🔒 in your hand
+- 🖐 **Relax** your fingers. The ball stays locked
+- ☝ **Flick up** quickly to **throw**. A longer flick gives more power, a sideways flick angles the shot
 - 🔘 **Pinch on any button** to press it: play, pause, shop, everything
 
 Hand mode is a little more forgiving than touch: the hoop moves slower, the ball gets a gentle pull toward the rim, and hand-mode best scores are saved separately.
@@ -49,7 +49,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 | `Store.cs` | Ball skins, coins and unlocks |
 | `Cfg.cs` | Game constants and colour theme |
 | `Fx.cs` / `Audio.cs` / `SwishMusic.cs` | Effects, sound and music |
-| `docs/Game/hands.js` | Webcam hand tracking: pinch to grab and press, flick to throw |
+| `docs/Game/hands.js` | Webcam hand tracking: pinch to grab (locks) and press, flick to throw |
 
 ## Developer
 Designed and developed by **Romaisa Mustabshirah**.
