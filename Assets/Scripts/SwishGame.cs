@@ -392,39 +392,26 @@ public class SwishGame : MonoBehaviour
         Audio.Play(Snd.Over);
     }
 
-    // ---------------- hand input (webcam, sent from the web page) ----------------
-    // The page calls SendMessage("Swish Street", "HandInput", "grab,x,y") every frame:
-    //   grab = 1 (fist) or 0 (open hand), x/y = 0..1 across the game canvas, y from the top.
-    // "off" means no hand is visible. A fist works like pressing the mouse, opening it like releasing.
-    bool handGrab, handPrevGrab, handPendingGrab;
-    Vector2 handPos;                // 0..1, y from the top
-    float handSeen = -10f;
-    const float HAND_TIMEOUT = .3f; // seconds without data before falling back to the mouse
-
-    public void HandInput(string msg)
+    // ---------------- hand flick (webcam, sent from the web page) ----------------
+    // When you flick your index finger up, the page calls
+    //   SendMessage("Swish Street", "HandFlick", "dx,dy")
+    // dx / dy = the flick as a fraction of the screen height (dy < 0 = upwards), already
+    // scaled by the page. The shot then works exactly like dragging that far on screen.
+    public void HandFlick(string msg)
     {
-        if (msg == "off") { handSeen = -10f; return; }
+        if (mode != Mode.Play || phase != Phase.Ready || ballPop < .6f) return;
         string[] p = msg.Split(',');
-        if (p.Length != 3) return;
+        if (p.Length != 2) return;
         var inv = System.Globalization.CultureInfo.InvariantCulture;
-        float x, y;
-        if (!float.TryParse(p[1], System.Globalization.NumberStyles.Float, inv, out x)) return;
-        if (!float.TryParse(p[2], System.Globalization.NumberStyles.Float, inv, out y)) return;
-        handGrab = p[0] == "1";
-        handPos = new Vector2(Mathf.Clamp01(x), Mathf.Clamp01(y));
-        handSeen = Time.unscaledTime;
-    }
+        float dx, dy;
+        if (!float.TryParse(p[0], System.Globalization.NumberStyles.Float, inv, out dx)) return;
+        if (!float.TryParse(p[1], System.Globalization.NumberStyles.Float, inv, out dy)) return;
 
-    bool HandActive { get { return Time.unscaledTime - handSeen < HAND_TIMEOUT; } }
-
-    bool ReadHand(out Vector2 pos, out bool pressed, out bool down, out bool released)
-    {
-        pos = new Vector2(handPos.x * Screen.width, (1f - handPos.y) * Screen.height);
-        pressed = handGrab && !handPrevGrab;
-        released = !handGrab && handPrevGrab;
-        down = handGrab;
-        handPrevGrab = handGrab;
-        return true;
+        float visibleHeight = cam.orthographicSize * 2f / Cfg.S;   // screen height in game pixels
+        Vector2 d = new Vector2(dx, dy) * visibleHeight;
+        float len = d.magnitude;
+        if (len > Cfg.MAXPULL) d *= Cfg.MAXPULL / len;              // same power limit as dragging
+        if (d.y < -10f) Launch(d);
     }
 
     // ---------------- input ----------------
@@ -438,14 +425,6 @@ public class SwishGame : MonoBehaviour
 
     bool ReadPointer(out Vector2 pos, out bool pressed, out bool down, out bool released)
     {
-        if (HandActive) return ReadHand(out pos, out pressed, out down, out released);
-
-        // Hand lost while holding the ball: cancel the shot instead of leaving it stuck in aim.
-        if (handPrevGrab)
-        {
-            handPrevGrab = false;
-            if (phase == Phase.Aim) phase = Phase.Ready;
-        }
 #if ENABLE_INPUT_SYSTEM
         var p = UnityEngine.InputSystem.Pointer.current;
         if (p == null) { pos = default; pressed = down = released = false; return false; }
@@ -493,14 +472,9 @@ public class SwishGame : MonoBehaviour
 
         Vector2 gp = ScreenToGame(sp);
 
-        // A fist made while the next ball is still popping in is remembered, not lost.
-        if (pressed && HandActive) handPendingGrab = true;
-        if (!down) handPendingGrab = false;
-
-        if (phase == Phase.Ready && (pressed || handPendingGrab) && ballPop >= .6f)
+        if (phase == Phase.Ready && pressed && ballPop >= .6f)
         {
             aimDown = aimCur = gp; phase = Phase.Aim;
-            handPendingGrab = false;
         }
         else if (phase == Phase.Aim)
         {

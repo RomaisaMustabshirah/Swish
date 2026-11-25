@@ -14,9 +14,9 @@ and the day slowly fades into night.
 
 ### 🖐 Play with your hands
 Click **Play with hands** at the top right of the game page and allow your camera:
-- **Make a fist** to grab the ball
-- **Move your fist up** toward the hoop to aim (the guide shows your arc)
-- **Open your hand** to shoot
+- **Point** your index finger, and an orange dot follows your fingertip
+- **Flick it up** toward the hoop to shoot, just like swiping on a phone
+- A longer flick means more power, and flicking slightly left or right angles the shot
 
 Hand tracking runs entirely in your browser with MediaPipe, and the camera feed never leaves your device.
 It uses the same hand-tracking approach as my gesture project [Ishara](https://github.com/RomaisaMustabshirah/Ishara).
@@ -29,7 +29,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 - **Game feel:** score popups, screen shake, sound effects and background music (toggleable).
 - **Best score** saved between sessions.
 - Mobile-friendly touch controls and a WebGL build.
-- **Hand-gesture controls** through the webcam (grab, aim, release).
+- **Hand-gesture controls**: flick your index finger at the webcam to shoot.
 
 ## Built With
 - Unity (Universal Render Pipeline)
@@ -45,7 +45,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 | `Store.cs` | Ball skins, coins and unlocks |
 | `Cfg.cs` | Game constants and colour theme |
 | `Fx.cs` / `Audio.cs` / `SwishMusic.cs` | Effects, sound and music |
-| `docs/Game/hands.js` | Webcam hand tracking that sends grab / aim / release to the game |
+| `docs/Game/hands.js` | Webcam hand tracking that detects index-finger flicks and sends shots to the game |
 
 ## Developer
 Designed and developed by **Romaisa Mustabshirah**.
