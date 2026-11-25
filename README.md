@@ -13,10 +13,10 @@ and the day slowly fades into night.
 - Miss and you lose a life. You have **3 lives**.
 
 ### 🖐 Play with your hands (touch-free)
-Click **Play with hands** (🖐) at the top right of the game page and allow your camera. Your pinch works exactly like a finger on the screen:
-- 🤏 **Pinch** thumb and index finger = **touch**
-- ↕ **Move while pinched** = **drag**. The aim arc shows your shot before you take it
-- 🖐 **Open your fingers** = **let go**, and the ball flies
+Click **Play with hands** (🖐) at the top right of the game page and allow your camera:
+- 🤏 **Pinch** thumb and index finger to **grab** the ball
+- ☝ **Flick up** while holding to **throw**. A longer flick gives more power, a sideways flick angles the shot
+- 🖐 **Open** without flicking to put the ball back down
 - 🔘 **Pinch on any button** to press it: play, pause, shop, everything
 
 Hand mode is a little more forgiving than touch: the hoop moves slower, the ball gets a gentle pull toward the rim, and hand-mode best scores are saved separately.
@@ -33,7 +33,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 - **Game feel:** score popups, screen shake, sound effects and background music (toggleable).
 - **Best score** saved between sessions.
 - Mobile-friendly touch controls and a WebGL build.
-- **Touch-free hand mode**: pinch in the air to aim, shoot and press buttons.
+- **Touch-free hand mode**: pinch to grab and press buttons, flick to throw.
 
 ## Built With
 - Unity (Universal Render Pipeline)
@@ -49,7 +49,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 | `Store.cs` | Ball skins, coins and unlocks |
 | `Cfg.cs` | Game constants and colour theme |
 | `Fx.cs` / `Audio.cs` / `SwishMusic.cs` | Effects, sound and music |
-| `docs/Game/hands.js` | Webcam hand tracking: turns your pinch into touch input for the game |
+| `docs/Game/hands.js` | Webcam hand tracking: pinch to grab and press, flick to throw |
 
 ## Developer
 Designed and developed by **Romaisa Mustabshirah**.
