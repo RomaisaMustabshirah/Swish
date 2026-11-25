@@ -392,6 +392,41 @@ public class SwishGame : MonoBehaviour
         Audio.Play(Snd.Over);
     }
 
+    // ---------------- hand input (webcam, sent from the web page) ----------------
+    // The page calls SendMessage("Swish Street", "HandInput", "grab,x,y") every frame:
+    //   grab = 1 (fist) or 0 (open hand), x/y = 0..1 across the game canvas, y from the top.
+    // "off" means no hand is visible. A fist works like pressing the mouse, opening it like releasing.
+    bool handGrab, handPrevGrab, handPendingGrab;
+    Vector2 handPos;                // 0..1, y from the top
+    float handSeen = -10f;
+    const float HAND_TIMEOUT = .3f; // seconds without data before falling back to the mouse
+
+    public void HandInput(string msg)
+    {
+        if (msg == "off") { handSeen = -10f; return; }
+        string[] p = msg.Split(',');
+        if (p.Length != 3) return;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        float x, y;
+        if (!float.TryParse(p[1], System.Globalization.NumberStyles.Float, inv, out x)) return;
+        if (!float.TryParse(p[2], System.Globalization.NumberStyles.Float, inv, out y)) return;
+        handGrab = p[0] == "1";
+        handPos = new Vector2(Mathf.Clamp01(x), Mathf.Clamp01(y));
+        handSeen = Time.unscaledTime;
+    }
+
+    bool HandActive { get { return Time.unscaledTime - handSeen < HAND_TIMEOUT; } }
+
+    bool ReadHand(out Vector2 pos, out bool pressed, out bool down, out bool released)
+    {
+        pos = new Vector2(handPos.x * Screen.width, (1f - handPos.y) * Screen.height);
+        pressed = handGrab && !handPrevGrab;
+        released = !handGrab && handPrevGrab;
+        down = handGrab;
+        handPrevGrab = handGrab;
+        return true;
+    }
+
     // ---------------- input ----------------
     public Vector2 AimVec()
     {
@@ -403,6 +438,14 @@ public class SwishGame : MonoBehaviour
 
     bool ReadPointer(out Vector2 pos, out bool pressed, out bool down, out bool released)
     {
+        if (HandActive) return ReadHand(out pos, out pressed, out down, out released);
+
+        // Hand lost while holding the ball: cancel the shot instead of leaving it stuck in aim.
+        if (handPrevGrab)
+        {
+            handPrevGrab = false;
+            if (phase == Phase.Aim) phase = Phase.Ready;
+        }
 #if ENABLE_INPUT_SYSTEM
         var p = UnityEngine.InputSystem.Pointer.current;
         if (p == null) { pos = default; pressed = down = released = false; return false; }
@@ -450,9 +493,14 @@ public class SwishGame : MonoBehaviour
 
         Vector2 gp = ScreenToGame(sp);
 
-        if (phase == Phase.Ready && pressed && ballPop >= .6f)
+        // A fist made while the next ball is still popping in is remembered, not lost.
+        if (pressed && HandActive) handPendingGrab = true;
+        if (!down) handPendingGrab = false;
+
+        if (phase == Phase.Ready && (pressed || handPendingGrab) && ballPop >= .6f)
         {
             aimDown = aimCur = gp; phase = Phase.Aim;
+            handPendingGrab = false;
         }
         else if (phase == Phase.Aim)
         {
