@@ -12,11 +12,15 @@ and the day slowly fades into night.
 - **Rim shot** (touches rim or board) = **1 point**
 - Miss and you lose a life. You have **3 lives**.
 
-### 🖐 Play with your hands
-Click **Play with hands** at the top right of the game page and allow your camera:
-- **Point** your index finger, and an orange dot follows your fingertip
-- **Flick it up** toward the hoop to shoot, just like swiping on a phone
-- A longer flick means more power, and flicking slightly left or right angles the shot
+### 🖐 Play with your hands (touch-free)
+Click **Play with hands** (🖐) at the top right of the game page and allow your camera. Your pinch works exactly like a finger on the screen:
+- 🤏 **Pinch** thumb and index finger = **touch**
+- ↕ **Move while pinched** = **drag**. The aim arc shows your shot before you take it
+- 🖐 **Open your fingers** = **let go**, and the ball flies
+- 🔘 **Pinch on any button** to press it: play, pause, shop, everything
+
+Hand mode is a little more forgiving than touch: the hoop moves slower, the ball gets a gentle pull toward the rim, and hand-mode best scores are saved separately.
+On phones, prop the phone up and play with your hand in front of the camera.
 
 Hand tracking runs entirely in your browser with MediaPipe, and the camera feed never leaves your device.
 It uses the same hand-tracking approach as my gesture project [Ishara](https://github.com/RomaisaMustabshirah/Ishara).
@@ -29,7 +33,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 - **Game feel:** score popups, screen shake, sound effects and background music (toggleable).
 - **Best score** saved between sessions.
 - Mobile-friendly touch controls and a WebGL build.
-- **Hand-gesture controls**: flick your index finger at the webcam to shoot.
+- **Touch-free hand mode**: pinch in the air to aim, shoot and press buttons.
 
 ## Built With
 - Unity (Universal Render Pipeline)
@@ -45,7 +49,7 @@ It uses the same hand-tracking approach as my gesture project [Ishara](https://g
 | `Store.cs` | Ball skins, coins and unlocks |
 | `Cfg.cs` | Game constants and colour theme |
 | `Fx.cs` / `Audio.cs` / `SwishMusic.cs` | Effects, sound and music |
-| `docs/Game/hands.js` | Webcam hand tracking that detects index-finger flicks and sends shots to the game |
+| `docs/Game/hands.js` | Webcam hand tracking: turns your pinch into touch input for the game |
 
 ## Developer
 Designed and developed by **Romaisa Mustabshirah**.

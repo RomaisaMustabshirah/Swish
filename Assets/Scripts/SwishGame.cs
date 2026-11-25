@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 public enum Mode { Home, Settings, Play, Pause, Over, Shop }
@@ -56,7 +57,7 @@ public class SwishGame : MonoBehaviour
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
         Store.Load();
         Theme.Apply("#1b2433", Store.Current.baseHex, "#e63b2e");
-        best = PlayerPrefs.GetInt("swish-street-best", 0);
+        best = PlayerPrefs.GetInt(BestKey, 0);
         hintSeen = PlayerPrefs.GetInt("swish-street-seen", 0) == 1;
 
         cam = Camera.main;
@@ -118,6 +119,7 @@ public class SwishGame : MonoBehaviour
         // smoothDeltaTime removes frame-time jitter, which is what makes motion look stuttery
         float dt = Mathf.Min(Time.smoothDeltaTime, .05f);
 
+        PollHand();
         HandleInput();
         Tick(dt);
         view.Render();
@@ -185,7 +187,8 @@ public class SwishGame : MonoBehaviour
         hoop.ax += (tg.ax - hoop.ax) * k; hoop.ay += (tg.ay - hoop.ay) * k;
         hoop.wx += (tg.wx - hoop.wx) * k; hoop.wy += (tg.wy - hoop.wy) * k;
         hoop.yOff += (tg.yo - hoop.yOff) * Mathf.Min(1f, h * 3f);
-        hoop.phX += hoop.wx * h; hoop.phY += hoop.wy * h;
+        float hs = handMode ? HAND_HOOP_SPEED : 1f;    // the hoop moves slower in hand mode
+        hoop.phX += hoop.wx * h * hs; hoop.phY += hoop.wy * h * hs;
         hoop.x = hoop.baseX + hoop.ax * Mathf.Sin(hoop.phX);
         hoop.y = hoop.baseY + hoop.yOff + hoop.ay * Mathf.Sin(hoop.phY);
     }
@@ -218,6 +221,14 @@ public class SwishGame : MonoBehaviour
                 if (imp > 110f && Time.time - lastFloor > .08f) { lastFloor = Time.time; Audio.Play(Snd.Floor, imp); }
             }
             if (Mathf.Abs(ball.vy) < 1f) { ball.vx *= 1f - 1.6f * h; ball.vr = ball.vx / Cfg.R; }
+        }
+
+        // Hand mode: a gentle pull toward the rim while the ball drops near it (air input is less precise).
+        if (handMode && phase == Phase.Fly && !scored && ball.vy > 0f)
+        {
+            float above = hoop.y - ball.y;
+            if (above > 0f && above < 140f && Mathf.Abs(ball.x - hoop.x) < Cfg.RIM_HALF + 30f)
+                ball.vx += (hoop.x - ball.x) * HAND_ASSIST * h;
         }
 
         HitCircle(hoop.x - Cfg.RIM_HALF, hoop.y, Cfg.RIM_R, Cfg.E_RIM);
@@ -386,32 +397,114 @@ public class SwishGame : MonoBehaviour
         if (score > best)
         {
             best = score; newBest = true;
-            PlayerPrefs.SetInt("swish-street-best", best);
+            PlayerPrefs.SetInt(BestKey, best);
             PlayerPrefs.Save();
         }
         Audio.Play(Snd.Over);
     }
 
-    // ---------------- hand flick (webcam, sent from the web page) ----------------
-    // When you flick your index finger up, the page calls
-    //   SendMessage("Swish Street", "HandFlick", "dx,dy")
-    // dx / dy = the flick as a fraction of the screen height (dy < 0 = upwards), already
-    // scaled by the page. The shot then works exactly like dragging that far on screen.
-    public void HandFlick(string msg)
-    {
-        if (mode != Mode.Play || phase != Phase.Ready || ballPop < .6f) return;
-        string[] p = msg.Split(',');
-        if (p.Length != 2) return;
-        var inv = System.Globalization.CultureInfo.InvariantCulture;
-        float dx, dy;
-        if (!float.TryParse(p[0], System.Globalization.NumberStyles.Float, inv, out dx)) return;
-        if (!float.TryParse(p[1], System.Globalization.NumberStyles.Float, inv, out dy)) return;
+    // ---------------- hand mode (webcam, sent from the web page) ----------------
+    // The page sends:
+    //   SetHandMode("1" / "0")    hand mode switched on / off
+    //   HandInput("pinch,x,y")    every camera frame. pinch = 1 / 0, x and y = 0..1 across the game, y from the top
+    //   HandInput("off")          no hand visible
+    // A pinch works exactly like a finger on the screen: pinch = touch, move = drag, open = lift.
+    // It works on the court (aim and shoot) and on every button (menus, shop, pause).
+    public bool handMode;
+    bool handPinch, handPrevPinch, handPressed, handReleased, handPendingGrab, handClick;
+    Vector2 handPos;                         // 0..1, y from the top
+    float handSeen = -10f;
+    const float HAND_TIMEOUT = .3f;          // seconds without data before the mouse / touch takes over
+    const float HAND_HOOP_SPEED = .7f;       // the moving hoop's speed in hand mode
+    const float HAND_ASSIST = 10f;           // pull toward the rim in hand mode (0 = off)
+    readonly List<Rect> handButtons = new List<Rect>();       // buttons drawn last frame
+    readonly List<Rect> handButtonsNext = new List<Rect>();   // buttons being drawn this frame
 
-        float visibleHeight = cam.orthographicSize * 2f / Cfg.S;   // screen height in game pixels
-        Vector2 d = new Vector2(dx, dy) * visibleHeight;
-        float len = d.magnitude;
-        if (len > Cfg.MAXPULL) d *= Cfg.MAXPULL / len;              // same power limit as dragging
-        if (d.y < -10f) Launch(d);
+    string BestKey { get { return handMode ? "swish-street-best-hands" : "swish-street-best"; } }
+    string BestLabel { get { return handMode ? "HAND BEST" : "BEST"; } }
+
+    public void SetHandMode(string on)
+    {
+        handMode = on == "1";
+        best = PlayerPrefs.GetInt(BestKey, 0);      // hand mode keeps its own best score
+        if (!handMode) handSeen = -10f;
+    }
+
+    public void HandInput(string msg)
+    {
+        if (msg == "off") { handSeen = -10f; return; }
+        string[] p = msg.Split(',');
+        if (p.Length != 3) return;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var num = System.Globalization.NumberStyles.Float;
+        float x, y;
+        if (!float.TryParse(p[1], num, inv, out x) || !float.TryParse(p[2], num, inv, out y)) return;
+        handPinch = p[0] == "1";
+        handPos = new Vector2(Mathf.Clamp01(x), Mathf.Clamp01(y));
+        handSeen = Time.unscaledTime;
+    }
+
+    bool HandActive { get { return handMode && Time.unscaledTime - handSeen < HAND_TIMEOUT; } }
+    Vector2 HandGuiPos { get { return new Vector2(handPos.x * Screen.width, handPos.y * Screen.height); } }
+
+    bool HandOverButton()
+    {
+        Vector2 g = HandGuiPos;
+        foreach (Rect r in handButtons) if (r.Contains(g)) return true;
+        return false;
+    }
+
+    // Once per frame: turns the pinch into press / release, like a touch starting and ending.
+    void PollHand()
+    {
+        handButtons.Clear();
+        handButtons.AddRange(handButtonsNext);
+        handButtonsNext.Clear();
+
+        bool pinch = HandActive && handPinch;
+        handPressed = pinch && !handPrevPinch;
+        handReleased = !pinch && handPrevPinch;
+        handPrevPinch = pinch;
+        handClick = handPressed && HandOverButton();
+
+        // Hand lost while aiming: cancel the shot instead of leaving it stuck.
+        if (handReleased && !HandActive && phase == Phase.Aim) phase = Phase.Ready;
+    }
+
+    bool ReadHand(out Vector2 pos, out bool pressed, out bool down, out bool released)
+    {
+        pos = new Vector2(handPos.x * Screen.width, (1f - handPos.y) * Screen.height);
+        pressed = handPressed && !handClick;     // a pinch on a button is a click, not the start of a shot
+        down = handPinch;
+        released = handReleased;
+        return true;
+    }
+
+    // Every button goes through here, so a pinch can press it like a finger.
+    bool Btn(Rect r, string text, GUIStyle st) { return Btn(r, new GUIContent(text), st); }
+
+    bool Btn(Rect r, GUIContent content, GUIStyle st)
+    {
+        if (Event.current.type == EventType.Repaint) handButtonsNext.Add(r);
+        bool hover = HandActive && r.Contains(HandGuiPos);
+        bool plain = st == GUIStyle.none;
+        if (hover && st == sBtn) st = sBtnHover;           // looks hovered, like a mouse over it
+
+        bool clicked = GUI.Button(r, content, st);
+
+        if (hover && plain && Event.current.type == EventType.Repaint)
+        {
+            Color old = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, .18f);
+            GUI.DrawTexture(r, Texture2D.whiteTexture);
+            GUI.color = old;
+        }
+        if (!clicked && hover && handClick)
+        {
+            handClick = false;                              // one pinch = one click
+            clicked = true;
+        }
+        return clicked;
     }
 
     // ---------------- input ----------------
@@ -425,6 +518,7 @@ public class SwishGame : MonoBehaviour
 
     bool ReadPointer(out Vector2 pos, out bool pressed, out bool down, out bool released)
     {
+        if (HandActive) return ReadHand(out pos, out pressed, out down, out released);
 #if ENABLE_INPUT_SYSTEM
         var p = UnityEngine.InputSystem.Pointer.current;
         if (p == null) { pos = default; pressed = down = released = false; return false; }
@@ -472,9 +566,17 @@ public class SwishGame : MonoBehaviour
 
         Vector2 gp = ScreenToGame(sp);
 
-        if (phase == Phase.Ready && pressed && ballPop >= .6f)
+        // A pinch made while the next ball is still popping in is remembered, not lost.
+        if (HandActive)
+        {
+            if (pressed) handPendingGrab = true;
+            if (!down) handPendingGrab = false;
+        }
+
+        if (phase == Phase.Ready && (pressed || (HandActive && handPendingGrab)) && ballPop >= .6f)
         {
             aimDown = aimCur = gp; phase = Phase.Aim;
+            handPendingGrab = false;
         }
         else if (phase == Phase.Aim)
         {
@@ -488,7 +590,7 @@ public class SwishGame : MonoBehaviour
     }
 
     // ---------------- HUD + shop (simple on-screen GUI for now) ----------------
-    GUIStyle sBig, sMid, sHuge, sBtn, sTitle, sTiny, sLeft;
+    GUIStyle sBig, sMid, sHuge, sBtn, sBtnHover, sTitle, sTiny, sLeft;
     GUIStyle panelStyle, cardStyle, selStyle;
     float styleScale;
 
@@ -636,6 +738,9 @@ public class SwishGame : MonoBehaviour
         sBtn.hover.textColor = Color.white;
         sBtn.active.textColor = Color.white;
         sBtn.focused.textColor = Color.white;
+
+        sBtnHover = new GUIStyle(sBtn);                 // how a button looks with a hand over it
+        sBtnHover.normal.background = buttonHoverTexture;
     }
 
     void DrawPanel(Rect r, Texture2D texture)
@@ -675,7 +780,7 @@ public class SwishGame : MonoBehaviour
         if (mode == Mode.Play || mode == Mode.Pause || mode == Mode.Over)
         {
             Lbl(new Rect(cx - 150 * s, top + 8 * s, 300 * s, 80 * s), score.ToString(), sBig, Theme.ink);
-            Lbl(new Rect(cx - 150 * s, top + 80 * s, 300 * s, 24 * s), "BEST " + Mathf.Max(best, score), sMid, soft);
+            Lbl(new Rect(cx - 150 * s, top + 80 * s, 300 * s, 24 * s), BestLabel + " " + Mathf.Max(best, score), sMid, soft);
 
             float x0 = right - 16 * s - (3 * 18 + 2 * 6) * s;
             for (int i = 0; i < 3; i++)
@@ -699,7 +804,7 @@ public class SwishGame : MonoBehaviour
                 38f * s
             );
 
-            if (GUI.Button(pauseRect, GUIContent.none, GUIStyle.none))
+            if (Btn(pauseRect, GUIContent.none, GUIStyle.none))
             {
                 mode = Mode.Pause;
                 Audio.Play(Snd.Click);
@@ -780,7 +885,7 @@ public class SwishGame : MonoBehaviour
 
         Lbl(
             new Rect(px, py + 195 * s, panelW, 25 * s),
-            "BEST SCORE   " + best,
+            BestLabel + " SCORE   " + best,
             sMid,
             soft
         );
@@ -799,7 +904,7 @@ public class SwishGame : MonoBehaviour
             gold
         );
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 115 * s, py + 300 * s, 230 * s, 48 * s),
             "PLAY AGAIN",
             sBtn))
@@ -807,7 +912,7 @@ public class SwishGame : MonoBehaviour
             StartGame();
         }
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 115 * s, py + 356 * s, 230 * s, 38 * s),
             "BALL COLLECTION",
             sBtn))
@@ -817,7 +922,7 @@ public class SwishGame : MonoBehaviour
             mode = Mode.Shop;
         }
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 115 * s, py + 401 * s, 230 * s, 30 * s),
             "HOME",
             sBtn))
@@ -929,7 +1034,7 @@ public class SwishGame : MonoBehaviour
                 sel ? gold : soft
             );
 
-            if (GUI.Button(r, GUIContent.none, GUIStyle.none))
+            if (Btn(r, GUIContent.none, GUIStyle.none))
                 OnShopTap(i);
         }
 
@@ -943,7 +1048,7 @@ public class SwishGame : MonoBehaviour
             );
         }
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 90 * s, py + panelH - 48 * s, 180 * s, 38 * s),
             "BACK",
             sBtn))
@@ -1003,7 +1108,7 @@ public class SwishGame : MonoBehaviour
 
         GUI.backgroundColor = Color.white;
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 115 * s, panelY + 145 * s, 230 * s, 54 * s),
             "PLAY",
             sBtn))
@@ -1012,7 +1117,7 @@ public class SwishGame : MonoBehaviour
             Audio.Play(Snd.Click);
         }
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 115 * s, panelY + 210 * s, 230 * s, 46 * s),
             "BALL COLLECTION",
             sBtn))
@@ -1027,7 +1132,7 @@ public class SwishGame : MonoBehaviour
             ? "MUSIC  ON"
             : "MUSIC  OFF";
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 115 * s, panelY + 268 * s, 230 * s, 46 * s),
             musicLabel,
             sBtn))
@@ -1038,7 +1143,7 @@ public class SwishGame : MonoBehaviour
 
         Lbl(
             new Rect(panelX, panelY + 350 * s, panelW, 30 * s),
-            "BEST SCORE   " + best,
+            BestLabel + " SCORE   " + best,
             sMid,
             Theme.ink
         );
@@ -1066,7 +1171,7 @@ public class SwishGame : MonoBehaviour
             Theme.ink
         );
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 110 * s, py + 80 * s, 220 * s, 48 * s),
             "RESUME",
             sBtn))
@@ -1074,7 +1179,7 @@ public class SwishGame : MonoBehaviour
             mode = Mode.Play;
         }
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 110 * s, py + 138 * s, 220 * s, 42 * s),
             "BALL COLLECTION",
             sBtn))
@@ -1084,7 +1189,7 @@ public class SwishGame : MonoBehaviour
             mode = Mode.Shop;
         }
 
-        if (GUI.Button(
+        if (Btn(
             new Rect(cx - 110 * s, py + 188 * s, 220 * s, 42 * s),
             "HOME",
             sBtn))

@@ -1,6 +1,8 @@
-// Swish hand mode: shoot by flicking your index finger, like swiping on a phone.
-//   Point your index finger  -> an orange dot follows your fingertip on the game
-//   Flick it up               -> shoot. Longer flick = more power, tilt = angle
+// Swish hand mode: play completely touch-free through the webcam.
+// Your pinch (thumb + index finger together) works exactly like a finger on the screen:
+//   Pinch           -> touch (press a button, or grab the ball)
+//   Move, pinched   -> drag (aim: the arc shows your shot)
+//   Open the pinch  -> lift your finger (shoot)
 // Everything runs in the browser. The camera feed is never uploaded.
 
 import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
@@ -11,124 +13,155 @@ const GAME_OBJECT = "Swish Street";   // created in SwishGame.Boot()
 
 // ---- tuning (change these, no Unity rebuild needed) ----
 export const TUNING = {
-  SHOT_GAIN: 0.7,      // flick length -> shot power. Shots too weak? raise it. Too strong? lower it.
-  MIN_RISE: 0.10,      // smallest upward flick that counts (fraction of camera height)
-  START_BELOW: 0.35,   // a flick must start below this height in the camera (0 = top, 1 = bottom)
-  MAX_TIME: 0.6,       // seconds: a flick longer than this ends and shoots
-  COOLDOWN: 0.8,       // seconds between shots
-  STILL: 0.008,        // movement smaller than this per frame = the finger has stopped
-  CURSOR_GAIN: 1.6,    // how far the dot moves for a hand movement
+  CURSOR_GAIN: 1.5,     // how far the cursor moves for a hand movement (bigger = less arm movement)
+  SMOOTH: 0.5,          // 0..1, higher = cursor follows the hand more tightly, lower = steadier
+  PINCH_ON: 0.32,       // thumb-index gap (÷ palm size) below this = pinched
+  PINCH_OFF: 0.48,      // gap above this = released (the gap between the two stops flicker)
+  RELEASE_FRAMES: 2,    // frames the pinch must stay open before it counts as released
 };
 
-const INDEX_TIP = 8, INDEX_PIP = 6, WRIST = 0;
+const WRIST = 0, THUMB_TIP = 4, INDEX_TIP = 8, MIDDLE_MCP = 9;
 const CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8],
   [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16],
   [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
 ];
-
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
-/** True when the index finger is straight (pointing). */
-export function isPointing(pts) {
-  const base = dist(pts[WRIST], pts[INDEX_PIP]);
-  return base > 1e-6 && dist(pts[WRIST], pts[INDEX_TIP]) / base > 1.05;
+/** Thumb-index gap divided by palm size, so it works near or far from the camera. */
+export function pinchGap(pts) {
+  const palm = dist(pts[WRIST], pts[MIDDLE_MCP]);
+  return palm > 1e-6 ? dist(pts[THUMB_TIP], pts[INDEX_TIP]) / palm : 9;
 }
 
 /**
- * Watches the index fingertip and reports a flick.
- * update() takes 21 [x, y] camera points (unmirrored), returns null or { dx, dy }:
- * the flick from its lowest point to where it stopped, mirrored, in camera-height units, times SHOT_GAIN.
+ * Turns hand frames into game messages "pinch,x,y" (x, y = 0..1 across the game, y from the top).
+ * The cursor is the point between thumb and index fingertips, mirrored like a mirror.
  */
-export class FlickTracker {
-  constructor(tuning = TUNING) { this.t = tuning; this.lastShot = -1e9; this.reset(); }
+export class PinchTracker {
+  constructor(tuning = TUNING) { this.t = tuning; this.reset(); }
+  reset() { this.pinch = false; this.openCount = 0; this.pos = null; this.heldPos = null; this.visible = false; }
 
-  reset() { this.hist = []; this.tip = null; this.pointing = false; }
-
-  _flick() {
-    // The lowest point in the recent path is where the flick started.
-    let start = this.hist[0];
-    for (const p of this.hist) if (p.y > start.y) start = p;
-    const end = this.hist[this.hist.length - 1];
-    return { start, end, rise: start.y - end.y };
-  }
-
-  _fire(now, start, end) {
-    this.lastShot = now;
-    this.hist = [];
-    return { dx: (end.x - start.x) * this.t.SHOT_GAIN, dy: (end.y - start.y) * this.t.SHOT_GAIN };
-  }
-
-  update(now, pts, w, h) {
-    // Hand lost: a fast flick often blurs out of view, so finish a flick already under way.
+  update(pts, w, h) {
     if (!pts) {
-      let shot = null;
-      if (this.hist.length >= 2 && now - this.lastShot >= this.t.COOLDOWN) {
-        const { start, end, rise } = this._flick();
-        if (rise >= this.t.MIN_RISE && start.y >= this.t.START_BELOW) shot = this._fire(now, start, end);
-      }
+      const was = this.visible;
       this.reset();
-      return shot;
+      return was ? "off" : null;
+    }
+    this.visible = true;
+
+    const gap = pinchGap(pts);
+    let released = false;
+    if (this.pinch) {
+      if (gap > this.t.PINCH_OFF) {
+        if (++this.openCount >= this.t.RELEASE_FRAMES) { this.pinch = false; this.openCount = 0; released = true; }
+      } else this.openCount = 0;
+    } else if (gap < this.t.PINCH_ON) {
+      this.pinch = true; this.openCount = 0;
     }
 
-    this.pointing = isPointing(pts);
-    // Mirrored (like a mirror) and measured in camera-height units so x and y match.
-    const tip = { t: now, x: (w - pts[INDEX_TIP][0]) / h, y: pts[INDEX_TIP][1] / h };
-    this.tip = { x: tip.x * h / w, y: tip.y };          // 0..1 across the camera, for the cursor
-    if (!this.pointing) { this.hist = []; return null; }
+    const mid = [(pts[THUMB_TIP][0] + pts[INDEX_TIP][0]) / 2, (pts[THUMB_TIP][1] + pts[INDEX_TIP][1]) / 2];
+    const mx = 1 - mid[0] / w, my = mid[1] / h;
+    const target = [clamp01(0.5 + (mx - 0.5) * this.t.CURSOR_GAIN), clamp01(0.5 + (my - 0.5) * this.t.CURSOR_GAIN)];
+    const k = this.t.SMOOTH;
+    this.pos = this.pos ? [this.pos[0] + (target[0] - this.pos[0]) * k, this.pos[1] + (target[1] - this.pos[1]) * k] : target;
 
-    this.hist.push(tip);
-    while (this.hist.length && now - this.hist[0].t > this.t.MAX_TIME + 0.3) this.hist.shift();
-    if (now - this.lastShot < this.t.COOLDOWN || this.hist.length < 2) return null;
+    // Fingers drift while opening, so the shot uses where the pinch was, not where the opening hand went.
+    let send = this.pos;
+    if (this.pinch && this.openCount === 0) this.heldPos = this.pos;
+    else if ((this.pinch || released) && this.heldPos) send = this.heldPos;
 
-    const { start, end, rise } = this._flick();
-    if (rise < this.t.MIN_RISE || start.y < this.t.START_BELOW) return null;
-
-    const prev = this.hist[this.hist.length - 2];
-    const stillRising = prev.y - end.y > this.t.STILL;
-    if (!stillRising || now - start.t > this.t.MAX_TIME) return this._fire(now, start, end);
-    return null;
+    return `${this.pinch ? 1 : 0},${send[0].toFixed(4)},${send[1].toFixed(4)}`;
   }
 }
 
+/** Phones and tablets: hand mode still works, with a compact layout. */
+export function isTouchDevice() {
+  if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) return true;
+  const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+  return coarse && Math.min(screen.width, screen.height) < 820;
+}
+
 // ---------- page UI ----------
-function injectUI() {
+function injectUI(phone) {
   const css = document.createElement("style");
   css.textContent = `
-    #hand-btn { position: fixed; top: 16px; right: 16px; z-index: 20; padding: 10px 16px;
+    #hand-btn { position: fixed; top: 12px; right: 12px; z-index: 20; padding: 10px 16px;
       border-radius: 999px; border: 0; cursor: pointer; font: 600 14px Arial, sans-serif;
       background: #ff914d; color: #111; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
     #hand-btn.on { background: #222; color: #ff914d; outline: 2px solid #ff914d; }
-    #hand-panel { position: fixed; left: 16px; bottom: 16px; z-index: 20; width: 220px;
+    #hand-btn.phone { padding: 8px 11px; font-size: 18px; }
+    #hand-panel { position: fixed; left: 12px; bottom: 12px; z-index: 20; width: 220px;
       border-radius: 14px; overflow: hidden; background: #151515; color: #ddd;
       font: 12px Arial, sans-serif; box-shadow: 0 4px 14px rgba(0,0,0,.4); display: none; }
     #hand-panel canvas { display: block; width: 220px; height: 150px; }
-    #hand-panel div { padding: 8px 10px; line-height: 1.5; }
+    #hand-panel .hp-body { padding: 8px 10px; line-height: 1.5; }
     #hand-panel b { color: #ff914d; }
-    #hand-cursor { position: fixed; z-index: 19; width: 22px; height: 22px; margin: -11px 0 0 -11px;
-      border-radius: 50%; background: rgba(255,145,77,.9); border: 2px solid #fff;
-      pointer-events: none; display: none; transition: opacity .15s; }
-    #hand-cursor.idle { opacity: .35; }
-    #hand-cursor.shot { animation: shot .35s ease-out; }
-    @keyframes shot { from { transform: scale(2.2); box-shadow: 0 0 0 6px rgba(255,145,77,.5); } to { transform: scale(1); } }
+    #hand-panel .hp-head { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 6px 10px; background: #222; cursor: pointer; user-select: none; font-weight: 600; }
+    #hand-panel .hp-head span { color: #ff914d; font-size: 14px; }
+    #hand-panel.mini { width: auto; }
+    #hand-panel.mini canvas, #hand-panel.mini .hp-body { display: none; }
+    @media (max-width: 1100px), (max-height: 700px) {
+      #hand-panel { width: 160px; } #hand-panel canvas { width: 160px; height: 109px; }
+    }
+    #hand-cursor { position: fixed; z-index: 21; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+      border-radius: 50%; border: 3px solid #fff; background: rgba(255,145,77,.35);
+      box-shadow: 0 0 0 2px rgba(0,0,0,.35); pointer-events: none; display: none;
+      transition: transform .08s, background .08s; }
+    #hand-cursor.pinch { transform: scale(.7); background: #ff914d; }
+    #hand-howto { position: fixed; inset: 0; z-index: 30; display: none; place-items: center;
+      background: rgba(0,0,0,.6); font: 15px Arial, sans-serif; color: #eee; }
+    #hand-howto .card { width: min(380px, calc(100vw - 32px)); padding: 22px; border-radius: 16px; background: #1b1b1b;
+      box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+    #hand-howto h3 { color: #ff914d; font-size: 20px; margin-bottom: 12px; }
+    #hand-howto li { list-style: none; padding: 6px 0; border-top: 1px solid #333; }
+    #hand-howto li:first-child { border-top: 0; }
+    #hand-howto p { margin-top: 12px; color: #aaa; font-size: 13px; }
+    #hand-howto button { margin-top: 14px; width: 100%; padding: 10px; border: 0; border-radius: 10px;
+      background: #ff914d; color: #111; font: 600 15px Arial, sans-serif; cursor: pointer; }
   `;
   document.head.appendChild(css);
 
   const btn = document.createElement("button");
-  btn.id = "hand-btn"; btn.textContent = "🖐 Play with hands";
+  btn.id = "hand-btn";
+  if (phone) btn.classList.add("phone");
+
   const panel = document.createElement("div");
   panel.id = "hand-panel";
-  panel.innerHTML = `<canvas width="220" height="150"></canvas>
-    <div><b>☝ Point</b> at the ball, then <b>flick up</b> to shoot<br><span id="hand-status">Starting…</span></div>`;
+  panel.innerHTML = `<div class="hp-head" title="Show / hide the camera panel">✋ Hand mode <span>–</span></div>
+    <canvas width="220" height="150"></canvas>
+    <div class="hp-body"><b>Pinch</b> = touch · <b>move</b> = drag · <b>open</b> = release<br><span id="hand-status">Starting…</span></div>`;
+  const head = panel.querySelector(".hp-head");
+  const setMini = (mini) => {
+    panel.classList.toggle("mini", mini);
+    head.querySelector("span").textContent = mini ? "+" : "–";
+  };
+  head.addEventListener("click", () => setMini(!panel.classList.contains("mini")));
+
   const cursor = document.createElement("div");
   cursor.id = "hand-cursor";
-  document.body.append(btn, panel, cursor);
-  return { btn, panel, cursor, preview: panel.querySelector("canvas"), status: panel.querySelector("#hand-status") };
+
+  const howto = document.createElement("div");
+  howto.id = "hand-howto";
+  howto.innerHTML = `<div class="card"><h3>✋ Hand mode</h3><ul>
+      <li>🤏 <b>Pinch</b> thumb + index finger = <b>touch</b></li>
+      <li>↕ <b>Move</b> while pinched = <b>drag</b>. The arc shows your shot</li>
+      <li>🖐 <b>Open</b> your fingers = <b>let go</b>, and the ball flies</li>
+      <li>🔘 Pinch on any button to press it: play, pause, shop</li></ul>
+      <p>${phone ? "Prop your phone up so it stands on its own, then play with your hand in front of the camera."
+                 : "Sit about an arm's length from the screen, in good light."}</p>
+      <button>Got it</button></div>`;
+  howto.querySelector("button").addEventListener("click", () => { howto.style.display = "none"; });
+
+  document.body.append(btn, panel, cursor, howto);
+  return { btn, panel, cursor, howto, setMini, preview: panel.querySelector("canvas"), status: panel.querySelector("#hand-status") };
 }
 
-function sendFlick(shot) {
+function sendToGame(method, msg) {
   const game = window.swishUnity;
-  if (game && shot) game.SendMessage(GAME_OBJECT, "HandFlick", `${shot.dx.toFixed(4)},${shot.dy.toFixed(4)}`);
+  if (game && msg !== null) game.SendMessage(GAME_OBJECT, method, msg);
 }
 
 async function createLandmarker() {
@@ -143,46 +176,44 @@ async function createLandmarker() {
 }
 
 function start() {
-  const ui = injectUI();
+  const phone = isTouchDevice();
+  const ui = injectUI(phone);
+  const OFF_LABEL = phone ? "🖐" : "🖐 Play with hands";
+  const ON_LABEL = phone ? "✋ ✕" : "✋ Hands on: click to stop";
+  ui.btn.textContent = OFF_LABEL;
+
   const video = document.createElement("video");
   video.playsInline = true; video.muted = true;
   const pctx = ui.preview.getContext("2d");
-  const tracker = new FlickTracker();
+  const tracker = new PinchTracker();
   let landmarker = null, stream = null, running = false, lastTime = -1;
 
   function drawPreview(pts, w, h) {
+    const cw = ui.preview.width, ch = ui.preview.height;
     pctx.fillStyle = "#151515";
-    pctx.fillRect(0, 0, 220, 150);
+    pctx.fillRect(0, 0, cw, ch);
     if (!pts) return;
-    const s = Math.min(220 / w, 150 / h);
-    const ox = (220 - w * s) / 2, oy = (150 - h * s) / 2;
+    const s = Math.min(cw / w, ch / h);
+    const ox = (cw - w * s) / 2, oy = (ch - h * s) / 2;
     const P = pts.map(([x, y]) => [ox + (w - x) * s, oy + y * s]);
-    pctx.strokeStyle = tracker.pointing ? "#ff914d" : "#888";
+    pctx.strokeStyle = tracker.pinch ? "#ff914d" : "#aaa";
     pctx.lineWidth = 2;
     pctx.beginPath();
     for (const [a, b] of CONNECTIONS) { pctx.moveTo(...P[a]); pctx.lineTo(...P[b]); }
     pctx.stroke();
-    pctx.fillStyle = "#fff";
-    pctx.beginPath(); pctx.arc(P[INDEX_TIP][0], P[INDEX_TIP][1], 4, 0, Math.PI * 2); pctx.fill();
+    pctx.fillStyle = "#ff914d";
+    for (const i of [THUMB_TIP, INDEX_TIP]) { pctx.beginPath(); pctx.arc(P[i][0], P[i][1], 4, 0, Math.PI * 2); pctx.fill(); }
   }
 
-  function placeCursor(visible) {
+  function placeCursor() {
     const canvas = document.querySelector("#unity-canvas");
-    if (!canvas || !visible || !tracker.tip) { ui.cursor.style.display = "none"; return; }
+    if (!canvas || !tracker.pos) { ui.cursor.style.display = "none"; return; }
     const r = canvas.getBoundingClientRect();
-    const g = TUNING.CURSOR_GAIN;
-    const x = Math.min(1, Math.max(0, 0.5 + (tracker.tip.x - 0.5) * g));
-    const y = Math.min(1, Math.max(0, 0.5 + (tracker.tip.y - 0.5) * g));
+    const p = tracker.pinch && tracker.heldPos ? tracker.heldPos : tracker.pos;
     ui.cursor.style.display = "block";
-    ui.cursor.style.left = r.left + x * r.width + "px";
-    ui.cursor.style.top = r.top + y * r.height + "px";
-    ui.cursor.classList.toggle("idle", !tracker.pointing);
-  }
-
-  function flash() {
-    ui.cursor.classList.remove("shot");
-    void ui.cursor.offsetWidth;            // restart the animation
-    ui.cursor.classList.add("shot");
+    ui.cursor.style.left = r.left + p[0] * r.width + "px";
+    ui.cursor.style.top = r.top + p[1] * r.height + "px";
+    ui.cursor.classList.toggle("pinch", tracker.pinch);
   }
 
   function loop(now) {
@@ -193,54 +224,62 @@ function start() {
       const res = landmarker.detectForVideo(video, now);
       const lms = res.landmarks && res.landmarks[0];
       const pts = lms ? lms.map((p) => [p.x * w, p.y * h]) : null;
-      const shot = tracker.update(now / 1000, pts, w, h);
-      if (shot) { sendFlick(shot); flash(); }
+      sendToGame("HandInput", tracker.update(pts, w, h));
       drawPreview(pts, w, h);
-      placeCursor(!!pts);
-      ui.status.textContent = shot ? "Shot! 🏀"
-        : !pts ? "Show your hand to the camera"
-        : tracker.pointing ? "Ready: flick up" : "Point your index finger";
+      placeCursor();
+      ui.status.textContent = !pts ? "Show your hand to the camera" : tracker.pinch ? "Pinched 🤏" : "Hand found";
     }
     requestAnimationFrame(loop);
   }
 
   async function turnOn() {
     ui.btn.disabled = true;
-    ui.btn.textContent = "Starting camera…";
+    ui.btn.textContent = phone ? "…" : "Starting camera…";
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, audio: false,
+        video: { width: { ideal: 480 }, height: { ideal: 360 }, facingMode: "user" }, audio: false,
       });
       video.srcObject = stream;
       await video.play();
     } catch (err) {
       ui.btn.disabled = false;
-      ui.btn.textContent = err && err.name === "NotAllowedError"
-        ? "Camera blocked: allow it in the address bar" : "No camera found";
+      ui.btn.textContent = OFF_LABEL;
+      alert(err && err.name === "NotAllowedError"
+        ? "Camera access was blocked. Allow the camera in your browser's address bar, then try again."
+        : "No camera found, or another app is using it.");
       return;
     }
     if (!landmarker) {
-      ui.btn.textContent = "Loading hand model…";
+      ui.btn.textContent = phone ? "…" : "Loading hand model…";
       try { landmarker = await createLandmarker(); }
       catch (err) {
         console.error(err);
-        ui.btn.disabled = false; ui.btn.textContent = "Couldn't load hand model: retry";
+        ui.btn.disabled = false; ui.btn.textContent = OFF_LABEL;
         stream.getTracks().forEach((t) => t.stop());
+        alert("Couldn't load the hand model. Check your internet connection and try again.");
         return;
       }
     }
     running = true; lastTime = -1; tracker.reset();
-    ui.btn.disabled = false; ui.btn.textContent = "✋ Hands on: click to stop"; ui.btn.classList.add("on");
+    sendToGame("SetHandMode", "1");
+    ui.btn.disabled = false; ui.btn.textContent = ON_LABEL; ui.btn.classList.add("on");
     ui.panel.style.display = "block";
+    ui.setMini(phone);                                    // phones start with the panel folded away
+
+    let seen = false;
+    try { seen = localStorage.getItem("swish-hands-howto") === "1"; localStorage.setItem("swish-hands-howto", "1"); } catch { /* ignore */ }
+    if (!seen) ui.howto.style.display = "grid";
     requestAnimationFrame(loop);
   }
 
   function turnOff() {
     running = false;
     if (stream) stream.getTracks().forEach((t) => t.stop());
+    sendToGame("HandInput", "off");
+    sendToGame("SetHandMode", "0");
     tracker.reset();
     ui.panel.style.display = "none"; ui.cursor.style.display = "none";
-    ui.btn.textContent = "🖐 Play with hands"; ui.btn.classList.remove("on");
+    ui.btn.textContent = OFF_LABEL; ui.btn.classList.remove("on");
   }
 
   ui.btn.addEventListener("click", () => (running ? turnOff() : turnOn()));
